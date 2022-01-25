@@ -10,17 +10,10 @@ from typing import Optional, Union, Type, Dict
 
 from .enforce_types import enforce_types
 
-import av
-import numpy as np
-
 
 threads_initialized = False
 drones: Optional[dict] = {}
 client_socket: socket.socket
-
-
-class TelloException(Exception):
-    pass
 
 
 @enforce_types
@@ -33,33 +26,14 @@ class Tello:
     # Send and receive commands, client socket
     RESPONSE_TIMEOUT = 7  # in seconds
     TAKEOFF_TIMEOUT = 20  # in seconds
-    FRAME_GRAB_TIMEOUT = 5
     TIME_BTW_COMMANDS = 0.1  # in seconds
     TIME_BTW_RC_CONTROL_COMMANDS = 0.001  # in seconds
     RETRY_COUNT = 3  # number of retries after a failed command
     TELLO_IP = '192.168.10.1'  # Tello IP address
 
-    # Video stream, server socket
-    VS_UDP_IP = '0.0.0.0'
-    VS_UDP_PORT = 11111
 
     CONTROL_UDP_PORT = 8889
     STATE_UDP_PORT = 8890
-
-    # Constants for video settings
-    BITRATE_AUTO = 0
-    BITRATE_1MBPS = 1
-    BITRATE_2MBPS = 2
-    BITRATE_3MBPS = 3
-    BITRATE_4MBPS = 4
-    BITRATE_5MBPS = 5
-    RESOLUTION_480P = 'low'
-    RESOLUTION_720P = 'high'
-    FPS_5 = 'low'
-    FPS_15 = 'middle'
-    FPS_30 = 'high'
-    CAMERA_FORWARD = 0
-    CAMERA_DOWNWARD = 1
 
     # Set up logger
     HANDLER = logging.StreamHandler()
@@ -89,10 +63,6 @@ class Tello:
     state_field_converters = {key : int for key in INT_STATE_FIELDS}
     state_field_converters.update({key : float for key in FLOAT_STATE_FIELDS})
 
-    # VideoCapture object
-    background_frame_read: Optional['BackgroundFrameRead'] = None
-
-    stream_on = False
     is_flying = False
 
     def __init__(self,
@@ -102,7 +72,6 @@ class Tello:
         global threads_initialized, client_socket, drones
 
         self.address = (host, Tello.CONTROL_UDP_PORT)
-        self.stream_on = False
         self.retry_count = retry_count
         self.last_received_command_timestamp = time.time()
         self.last_rc_control_timestamp = time.time()
@@ -235,7 +204,7 @@ class Tello:
         if key in state:
             return state[key]
         else:
-            raise TelloException('Could not get state property: {}'.format(key))
+            raise Exception('Could not get state property: {}'.format(key))
 
     def get_mission_pad_id(self) -> int:
         """Mission pad ID of the currently detected mission pad
@@ -395,21 +364,9 @@ class Tello:
     def get_udp_video_address(self) -> str:
         """Internal method, you normally wouldn't call this youself.
         """
-        address_schema = 'udp://{ip}:{port}'  # + '?overrun_nonfatal=1&fifo_size=5000'
+        address_schema = 'udp://@{ip}:{port}'  # + '?overrun_nonfatal=1&fifo_size=5000'
         address = address_schema.format(ip=self.VS_UDP_IP, port=self.VS_UDP_PORT)
         return address
-
-    def get_frame_read(self) -> 'BackgroundFrameRead':
-        """Get the BackgroundFrameRead object from the camera drone. Then, you just need to call
-        backgroundFrameRead.frame to get the actual frame received by the drone.
-        Returns:
-            BackgroundFrameRead
-        """
-        if self.background_frame_read is None:
-            address = self.get_udp_video_address()
-            self.background_frame_read = BackgroundFrameRead(self, address)
-            self.background_frame_read.start()
-        return self.background_frame_read
 
     def send_command_with_return(self, command: str, timeout: int = RESPONSE_TIMEOUT) -> str:
         """Send command to Tello and wait for its response.
@@ -515,7 +472,7 @@ class Tello:
         Internal method, you normally wouldn't call this yourself.
         """
         tries = 1 + self.retry_count
-        raise TelloException("Command '{}' was unsuccessful for {} tries. Latest response:\t'{}'"
+        raise Exception("Command '{}' was unsuccessful for {} tries. Latest response:\t'{}'"
                         .format(command, tries, response))
 
     def connect(self, wait_for_state=True):
@@ -533,7 +490,7 @@ class Tello:
                 time.sleep(1 / REPS)
 
             if not self.get_current_state():
-                raise TelloException('Did not receive a state packet from the Tello')
+                raise Exception('Did not receive a state packet from the Tello')
 
     def send_keepalive(self):
         """Send a keepalive packet to prevent the drone from landing after 15s
@@ -568,26 +525,6 @@ class Tello:
         """
         self.send_control_command("land")
         self.is_flying = False
-
-    def streamon(self):
-        """Turn on video streaming. Use `tello.get_frame_read` afterwards.
-        Video Streaming is supported on all tellos when in AP mode (i.e.
-        when your computer is connected to Tello-XXXXXX WiFi ntwork).
-        Currently Tello EDUs do not support video streaming while connected
-        to a WiFi-network.
-
-        !!! Note:
-            If the response is 'Unknown command' you have to update the Tello
-            firmware. This can be done using the official Tello app.
-        """
-        self.send_control_command("streamon")
-        self.stream_on = True
-
-    def streamoff(self):
-        """Turn off video streaming.
-        """
-        self.send_control_command("streamoff")
-        self.stream_on = False
 
     def emergency(self):
         """Stop all motors immediately.
@@ -844,49 +781,6 @@ class Tello:
         """
         self.send_command_without_return('reboot')
 
-    def set_video_bitrate(self, bitrate: int):
-        """Sets the bitrate of the video stream
-        Use one of the following for the bitrate argument:
-            Tello.BITRATE_AUTO
-            Tello.BITRATE_1MBPS
-            Tello.BITRATE_2MBPS
-            Tello.BITRATE_3MBPS
-            Tello.BITRATE_4MBPS
-            Tello.BITRATE_5MBPS
-        """
-        cmd = 'setbitrate {}'.format(bitrate)
-        self.send_control_command(cmd)
-
-    def set_video_resolution(self, resolution: str):
-        """Sets the resolution of the video stream
-        Use one of the following for the resolution argument:
-            Tello.RESOLUTION_480P
-            Tello.RESOLUTION_720P
-        """
-        cmd = 'setresolution {}'.format(resolution)
-        self.send_control_command(cmd)
-
-    def set_video_fps(self, fps: str):
-        """Sets the frames per second of the video stream
-        Use one of the following for the fps argument:
-            Tello.FPS_5
-            Tello.FPS_15
-            Tello.FPS_30
-        """
-        cmd = 'setfps {}'.format(fps)
-        self.send_control_command(cmd)
-
-    def set_video_direction(self, direction: int):
-        """Selects one of the two cameras for video streaming
-        The forward camera is the regular 1080x720 color camera
-        The downward camera is a grey-only 320x240 IR-sensitive camera
-        Use one of the following for the direction argument:
-            Tello.CAMERA_FORWARD
-            Tello.CAMERA_DOWNWARD
-        """
-        cmd = 'downvision {}'.format(direction)
-        self.send_control_command(cmd)
-
     def send_expansion_command(self, expansion_cmd: str):
         """Sends a command to the ESP32 expansion board connected to a Tello Talent
         Use e.g. tello.send_expansion_command("led 255 0 0") to turn the top led red.
@@ -994,10 +888,6 @@ class Tello:
         """
         if self.is_flying:
             self.land()
-        if self.stream_on:
-            self.streamoff()
-        if self.background_frame_read is not None:
-            self.background_frame_read.stop()
 
         host = self.address[0]
         if host in drones:
@@ -1007,49 +897,3 @@ class Tello:
         self.end()
 
 
-class BackgroundFrameRead:
-    """
-    This class read frames using PyAV in background. Use
-    backgroundFrameRead.frame to get the current frame.
-    """
-
-    def __init__(self, tello, address):
-        self.address = address
-        self.frame = np.zeros([300, 400, 3], dtype=np.uint8)
-
-        # Try grabbing frame with PyAV
-        # According to issue #90 the decoder might need some time
-        # https://github.com/damiafuentes/DJITelloPy/issues/90#issuecomment-855458905
-        try:
-            Tello.LOGGER.debug('trying to grab video frames...')
-            self.container = av.open(self.address, timeout=(Tello.FRAME_GRAB_TIMEOUT, None))
-        except av.error.ExitError:
-            raise TelloException('Failed to grab video frames from video stream')
-
-        self.stopped = False
-        self.worker = Thread(target=self.update_frame, args=(), daemon=True)
-
-    def start(self):
-        """Start the frame update worker
-        Internal method, you normally wouldn't call this yourself.
-        """
-        self.worker.start()
-
-    def update_frame(self):
-        """Thread worker function to retrieve frames using PyAV
-        Internal method, you normally wouldn't call this yourself.
-        """
-        try:
-            for frame in self.container.decode(video=0):
-                self.frame = np.array(frame.to_image())
-                if self.stopped:
-                    self.container.close()
-                    break
-        except av.error.ExitError:
-            raise TelloException('Do not have enough frames for decoding, please try again or increase video fps before get_frame_read()')
-
-    def stop(self):
-        """Stop the frame update worker
-        Internal method, you normally wouldn't call this yourself.
-        """
-        self.stopped = True
